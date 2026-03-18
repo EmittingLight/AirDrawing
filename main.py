@@ -27,10 +27,7 @@ WINDOW_NAME = "Hand Drawing"
 clear_gesture_frames = 0
 CLEAR_HOLD_FRAMES = 15
 
-# Точки текущего рисунка
 stroke_points = []
-
-# Последнее распознанное значение
 detected_shape = ""
 detected_shape_timer = 0
 
@@ -100,8 +97,7 @@ def only_index_finger_up(landmarks):
 
 
 def is_open_palm(hand_landmarks):
-    fingers = count_fingers(hand_landmarks)
-    return fingers >= 4
+    return count_fingers(hand_landmarks) >= 4
 
 
 def draw_neon_line(canvas, x1, y1, x2, y2):
@@ -147,12 +143,38 @@ def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
 
+def simplify_points(points, min_dist=8):
+    if not points:
+        return []
+
+    simplified = [points[0]]
+    for p in points[1:]:
+        if distance(p, simplified[-1]) >= min_dist:
+            simplified.append(p)
+
+    if len(simplified) == 1 and points:
+        simplified.append(points[-1])
+
+    return simplified
+
+
+def path_length(points):
+    total = 0.0
+    for i in range(1, len(points)):
+        total += distance(points[i - 1], points[i])
+    return total
+
+
 def detect_shape(points):
-    if len(points) < 20:
+    if len(points) < 25:
         return "?"
 
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
+    pts = simplify_points(points, min_dist=6)
+    if len(pts) < 12:
+        return "?"
+
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
 
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
@@ -160,33 +182,98 @@ def detect_shape(points):
     width = max_x - min_x
     height = max_y - min_y
 
-    if width < 30 or height < 30:
+    if width < 40 or height < 40:
         return "?"
 
     bbox_ratio = width / height if height != 0 else 999
-
-    start_point = points[0]
-    end_point = points[-1]
-    end_distance = distance(start_point, end_point)
-
     diag = math.hypot(width, height)
+
+    start_point = pts[0]
+    end_point = pts[-1]
+    end_distance = distance(start_point, end_point)
     close_ratio = end_distance / diag if diag != 0 else 999
 
     center_x = (min_x + max_x) / 2
     center_y = (min_y + max_y) / 2
 
-    # Сколько точек проходит близко к центру
+    # Насколько часто линия проходит через центр
     center_hits = 0
-    for x, y in points:
-        if abs(x - center_x) < width * 0.15 and abs(y - center_y) < height * 0.15:
+    center_rx = width * 0.18
+    center_ry = height * 0.18
+    for x, y in pts:
+        if abs(x - center_x) <= center_rx and abs(y - center_y) <= center_ry:
             center_hits += 1
+    center_ratio = center_hits / len(pts)
 
-    # Признаки круга
-    if 0.7 <= bbox_ratio <= 1.3 and close_ratio < 0.25:
+    # Квадранты вокруг центра
+    quadrants = set()
+    for x, y in pts:
+        qx = 0 if x < center_x else 1
+        qy = 0 if y < center_y else 1
+        quadrants.add((qx, qy))
+
+    # Радиусы до центра — для круга должны быть более-менее стабильны
+    radii = [math.hypot(x - center_x, y - center_y) for x, y in pts]
+    mean_radius = sum(radii) / len(radii)
+    if mean_radius == 0:
+        return "?"
+    radius_std = (sum((r - mean_radius) ** 2 for r in radii) / len(radii)) ** 0.5
+    radius_std_ratio = radius_std / mean_radius
+
+    # Направления сегментов — для X должны преобладать диагонали
+    diag1_hits = 0  # около 45°
+    diag2_hits = 0  # около 135°
+    useful_segments = 0
+
+    for i in range(1, len(pts)):
+        dx = pts[i][0] - pts[i - 1][0]
+        dy = pts[i][1] - pts[i - 1][1]
+        seg_len = math.hypot(dx, dy)
+
+        if seg_len < 5:
+            continue
+
+        useful_segments += 1
+
+        angle = abs(math.degrees(math.atan2(dy, dx)))
+        angle = angle % 180
+
+        if 20 <= angle <= 70:
+            diag1_hits += 1
+        elif 110 <= angle <= 160:
+            diag2_hits += 1
+
+    if useful_segments == 0:
+        return "?"
+
+    diag1_ratio = diag1_hits / useful_segments
+    diag2_ratio = diag2_hits / useful_segments
+
+    total_len = path_length(pts)
+    perimeter_like = 2 * (width + height)
+    len_box_ratio = total_len / perimeter_like if perimeter_like != 0 else 999
+
+    # ---- O ----
+    # Круг: замкнут, не слишком лезет в центр, радиус более-менее стабилен
+    if (
+        0.7 <= bbox_ratio <= 1.35
+        and close_ratio < 0.22
+        and radius_std_ratio < 0.35
+        and center_ratio < 0.18
+        and 0.6 <= len_box_ratio <= 1.8
+    ):
         return "O"
 
-    # Признаки крестика
-    if 0.6 <= bbox_ratio <= 1.6 and close_ratio > 0.25 and center_hits >= max(3, len(points) // 12):
+    # ---- X ----
+    # Крестик: не замкнут, часто идёт через центр, есть обе диагонали и покрывает 4 квадранта
+    if (
+        0.55 <= bbox_ratio <= 1.8
+        and close_ratio > 0.18
+        and center_ratio > 0.10
+        and len(quadrants) == 4
+        and diag1_ratio > 0.18
+        and diag2_ratio > 0.18
+    ):
         return "X"
 
     return "?"
@@ -247,7 +334,6 @@ while True:
                 add_sparks(smooth_x, smooth_y)
 
                 prev_x, prev_y = smooth_x, smooth_y
-
                 stroke_points.append((smooth_x, smooth_y))
             else:
                 prev_x, prev_y = None, None
@@ -256,16 +342,16 @@ while True:
         prev_x, prev_y = None, None
         smooth_x, smooth_y = None, None
 
-    # Если рисовали и перестали — пробуем распознать фигуру
+    # Если перестали рисовать — распознаём фигуру
     if was_drawing_last_frame and not drawing_mode:
-        if len(stroke_points) >= 20:
+        if len(stroke_points) >= 25:
             detected_shape = detect_shape(stroke_points)
-            detected_shape_timer = 90  # примерно 3 секунды при ~30 fps
+            detected_shape_timer = 90
         stroke_points = []
 
     was_drawing_last_frame = drawing_mode
 
-    # Жест очистки
+    # Очистка жестом
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
@@ -317,13 +403,14 @@ while True:
         )
 
     if detected_shape_timer > 0 and detected_shape:
+        color = (255, 255, 0) if detected_shape != "?" else (0, 100, 255)
         cv2.putText(
             frame,
             f"Detected: {detected_shape}",
             (20, 200),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.2,
-            (255, 255, 0),
+            color,
             3
         )
         detected_shape_timer -= 1
