@@ -43,12 +43,10 @@ game_over = False
 winner_text = ""
 winning_cells = []
 
-# Анимация победной линии
 win_line_progress = 0.0
 WIN_LINE_SPEED = 0.04
 frame_counter = 0
 
-# Очередь хода
 current_turn = "X"
 
 
@@ -529,6 +527,24 @@ def get_cell_center(row, col, frame_w, frame_h):
     return cx, cy
 
 
+def draw_centered_text_with_bg(frame, text, y, font_scale, text_color, bg_color, thickness=2, pad=12):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    h, w, _ = frame.shape
+    x = (w - tw) // 2
+
+    x1 = x - pad
+    y1 = y - th - pad
+    x2 = x + tw + pad
+    y2 = y + baseline + pad
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), bg_color, -1)
+    frame[:] = cv2.addWeighted(overlay, 0.35, frame, 0.65, 0)
+
+    cv2.putText(frame, text, (x, y), font, font_scale, text_color, thickness)
+
+
 def draw_board(frame):
     global selected_row, selected_col, frame_counter, win_line_progress
 
@@ -719,15 +735,16 @@ while True:
         2
     )
 
-    cv2.putText(
-        frame,
-        f"Current turn: {current_turn}",
-        (20, 80),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (255, 255, 255),
-        2
-    )
+    if not game_over:
+        cv2.putText(
+            frame,
+            f"Current turn: {current_turn}",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2
+        )
 
     if drawing_mode and not game_over:
         cv2.putText(
@@ -752,7 +769,7 @@ while True:
             2
         )
 
-    if detected_shape_timer > 0 and detected_shape:
+    if detected_shape_timer > 0 and detected_shape and not game_over:
         color = (255, 255, 0) if detected_shape != "?" else (0, 100, 255)
         cv2.putText(
             frame,
@@ -765,7 +782,7 @@ while True:
         )
         detected_shape_timer -= 1
 
-    if status_timer > 0 and status_message:
+    if status_timer > 0 and status_message and not game_over:
         cv2.putText(
             frame,
             status_message,
@@ -778,15 +795,12 @@ while True:
         status_timer -= 1
 
     if game_over and winner_text:
-        cv2.putText(
-            frame,
-            winner_text,
-            (20, 285),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.3,
-            (0, 0, 255),
-            3
-        )
+        if winner_text == "DRAW!":
+            draw_centered_text_with_bg(frame, "DRAW!", 90, 1.6, (0, 255, 255), (40, 40, 40), 3)
+        else:
+            draw_centered_text_with_bg(frame, winner_text, 90, 1.6, (0, 0, 255), (40, 40, 40), 3)
+
+        draw_centered_text_with_bg(frame, "Press C for new game", 140, 0.9, (255, 255, 255), (40, 40, 40), 2)
 
     _, _, window_w, window_h = cv2.getWindowImageRect(WINDOW_NAME)
 
@@ -809,7 +823,7 @@ while True:
         detected_shape = ""
         detected_shape_timer = 0
         status_message = "New game started"
-        status_timer = 90
+        status_timer = 60
 
 cap.release()
 cv2.destroyAllWindows()
