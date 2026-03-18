@@ -33,7 +33,6 @@ detected_shape_timer = 0
 status_message = ""
 status_timer = 0
 
-# Игровое поле 3x3
 board = [["" for _ in range(3)] for _ in range(3)]
 
 
@@ -259,26 +258,38 @@ def detect_shape(points):
     perimeter_like = 2 * (width + height)
     len_box_ratio = total_len / perimeter_like if perimeter_like != 0 else 999
 
+    # МЯГЧЕ ДЛЯ O
     if (
-        0.7 <= bbox_ratio <= 1.35
-        and close_ratio < 0.22
-        and radius_std_ratio < 0.35
-        and center_ratio < 0.18
-        and 0.6 <= len_box_ratio <= 1.8
+        0.55 <= bbox_ratio <= 1.6
+        and close_ratio < 0.38
+        and radius_std_ratio < 0.55
+        and center_ratio < 0.30
+        and 0.45 <= len_box_ratio <= 2.2
     ):
         return "O"
 
+    # ЧУТЬ СТРОЖЕ ДЛЯ X
     if (
-        0.55 <= bbox_ratio <= 1.8
-        and close_ratio > 0.18
-        and center_ratio > 0.10
+        0.45 <= bbox_ratio <= 1.9
+        and close_ratio > 0.22
+        and center_ratio > 0.12
         and len(quadrants) == 4
-        and diag1_ratio > 0.18
-        and diag2_ratio > 0.18
+        and diag1_ratio > 0.22
+        and diag2_ratio > 0.22
     ):
         return "X"
 
     return "?"
+
+
+def get_stroke_bounds(points):
+    if not points:
+        return None
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    return min(xs), min(ys), max(xs), max(ys)
 
 
 def get_stroke_cell(points, frame_w, frame_h):
@@ -320,16 +331,6 @@ def get_stroke_cell(points, frame_w, frame_h):
     return best_row, best_col
 
 
-def get_stroke_bounds(points):
-    if not points:
-        return None
-
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-
-    return min(xs), min(ys), max(xs), max(ys)
-
-
 def place_symbol(points, symbol, frame_w, frame_h):
     global status_message, status_timer
 
@@ -364,7 +365,6 @@ def place_symbol(points, symbol, frame_w, frame_h):
     shape_area = max(1, (max_x - min_x) * (max_y - min_y))
     overlap_ratio = overlap_area / shape_area
 
-    # Было слишком строго. Делаем мягче.
     if overlap_ratio < 0.25:
         status_message = "Draw more inside one cell"
         status_timer = 90
