@@ -17,7 +17,6 @@ cap = cv2.VideoCapture(0)
 
 canvas = None
 prev_x, prev_y = None, None
-
 smooth_x, smooth_y = None, None
 SMOOTHING = 0.2
 
@@ -25,9 +24,15 @@ particles = []
 
 WINDOW_NAME = "Hand Drawing"
 
-# Счётчик для жеста очистки
 clear_gesture_frames = 0
-CLEAR_HOLD_FRAMES = 15  # сколько кадров держать открытую ладонь
+CLEAR_HOLD_FRAMES = 15
+
+# Точки текущего рисунка
+stroke_points = []
+
+# Последнее распознанное значение
+detected_shape = ""
+detected_shape_timer = 0
 
 
 def is_finger_up(landmarks, tip_id, pip_id):
@@ -91,29 +96,17 @@ def only_index_finger_up(landmarks):
     ring_up = is_finger_up(landmarks, 16, 14)
     pinky_up = is_finger_up(landmarks, 20, 18)
 
-    # Большой палец игнорируем, чтобы режим рисования
-    # работал стабильнее для обеих рук
     return index_up and not middle_up and not ring_up and not pinky_up
 
 
 def is_open_palm(hand_landmarks):
-    """
-    Жест открытой ладони:
-    4 или 5 пальцев подняты.
-    Это надёжнее, чем требовать идеальный большой палец.
-    """
     fingers = count_fingers(hand_landmarks)
     return fingers >= 4
 
 
 def draw_neon_line(canvas, x1, y1, x2, y2):
-    # Внешнее свечение
     cv2.line(canvas, (x1, y1), (x2, y2), (255, 200, 0), 10)
-
-    # Средний слой
     cv2.line(canvas, (x1, y1), (x2, y2), (255, 255, 0), 5)
-
-    # Яркое ядро
     cv2.line(canvas, (x1, y1), (x2, y2), (255, 255, 150), 2)
 
 
@@ -141,16 +134,68 @@ def update_particles(frame):
 
 
 def clear_canvas():
-    global canvas, particles, prev_x, prev_y, smooth_x, smooth_y
+    global canvas, particles, prev_x, prev_y, smooth_x, smooth_y, stroke_points
     if canvas is not None:
         canvas[:] = 0
     particles.clear()
     prev_x, prev_y = None, None
     smooth_x, smooth_y = None, None
+    stroke_points = []
+
+
+def distance(p1, p2):
+    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+
+
+def detect_shape(points):
+    if len(points) < 20:
+        return "?"
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+
+    width = max_x - min_x
+    height = max_y - min_y
+
+    if width < 30 or height < 30:
+        return "?"
+
+    bbox_ratio = width / height if height != 0 else 999
+
+    start_point = points[0]
+    end_point = points[-1]
+    end_distance = distance(start_point, end_point)
+
+    diag = math.hypot(width, height)
+    close_ratio = end_distance / diag if diag != 0 else 999
+
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+
+    # Сколько точек проходит близко к центру
+    center_hits = 0
+    for x, y in points:
+        if abs(x - center_x) < width * 0.15 and abs(y - center_y) < height * 0.15:
+            center_hits += 1
+
+    # Признаки круга
+    if 0.7 <= bbox_ratio <= 1.3 and close_ratio < 0.25:
+        return "O"
+
+    # Признаки крестика
+    if 0.6 <= bbox_ratio <= 1.6 and close_ratio > 0.25 and center_hits >= max(3, len(points) // 12):
+        return "X"
+
+    return "?"
 
 
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
 cv2.resizeWindow(WINDOW_NAME, 960, 720)
+
+was_drawing_last_frame = False
 
 while True:
     ret, frame = cap.read()
@@ -177,11 +222,9 @@ while True:
             landmarks = hand_landmarks.landmark
             fingers_count = count_fingers(hand_landmarks)
 
-            # Проверяем жест открытой ладони
             if is_open_palm(hand_landmarks):
                 open_palm_detected = True
 
-            # Режим рисования
             if only_index_finger_up(landmarks):
                 drawing_mode = True
 
@@ -204,6 +247,8 @@ while True:
                 add_sparks(smooth_x, smooth_y)
 
                 prev_x, prev_y = smooth_x, smooth_y
+
+                stroke_points.append((smooth_x, smooth_y))
             else:
                 prev_x, prev_y = None, None
                 smooth_x, smooth_y = None, None
@@ -211,7 +256,16 @@ while True:
         prev_x, prev_y = None, None
         smooth_x, smooth_y = None, None
 
-    # Логика очистки жестом
+    # Если рисовали и перестали — пробуем распознать фигуру
+    if was_drawing_last_frame and not drawing_mode:
+        if len(stroke_points) >= 20:
+            detected_shape = detect_shape(stroke_points)
+            detected_shape_timer = 90  # примерно 3 секунды при ~30 fps
+        stroke_points = []
+
+    was_drawing_last_frame = drawing_mode
+
+    # Жест очистки
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
@@ -220,17 +274,13 @@ while True:
     if clear_gesture_frames >= CLEAR_HOLD_FRAMES:
         clear_canvas()
         clear_gesture_frames = 0
+        detected_shape = ""
+        detected_shape_timer = 0
 
-    # Мягкое свечение
     glow = cv2.GaussianBlur(canvas, (0, 0), 6)
-
-    # Сначала glow
     frame = cv2.addWeighted(frame, 1.0, glow, 0.3, 0)
-
-    # Потом сам холст мягко
     frame = cv2.addWeighted(frame, 1.0, canvas, 0.7, 0)
 
-    # Искры поверх
     update_particles(frame)
 
     cv2.putText(
@@ -254,7 +304,6 @@ while True:
             2
         )
 
-    # Подсказка про очистку жестом
     if open_palm_detected and not drawing_mode:
         progress = int((clear_gesture_frames / CLEAR_HOLD_FRAMES) * 100)
         cv2.putText(
@@ -266,6 +315,18 @@ while True:
             (0, 100, 255),
             2
         )
+
+    if detected_shape_timer > 0 and detected_shape:
+        cv2.putText(
+            frame,
+            f"Detected: {detected_shape}",
+            (20, 200),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (255, 255, 0),
+            3
+        )
+        detected_shape_timer -= 1
 
     _, _, window_w, window_h = cv2.getWindowImageRect(WINDOW_NAME)
 
@@ -284,6 +345,8 @@ while True:
     if key == ord('c'):
         clear_canvas()
         clear_gesture_frames = 0
+        detected_shape = ""
+        detected_shape_timer = 0
 
 cap.release()
 cv2.destroyAllWindows()
