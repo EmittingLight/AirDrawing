@@ -25,6 +25,10 @@ particles = []
 
 WINDOW_NAME = "Hand Drawing"
 
+# Счётчик для жеста очистки
+clear_gesture_frames = 0
+CLEAR_HOLD_FRAMES = 15  # сколько кадров держать открытую ладонь
+
 
 def is_finger_up(landmarks, tip_id, pip_id):
     return landmarks[tip_id].y < landmarks[pip_id].y
@@ -92,6 +96,16 @@ def only_index_finger_up(landmarks):
     return index_up and not middle_up and not ring_up and not pinky_up
 
 
+def is_open_palm(hand_landmarks):
+    """
+    Жест открытой ладони:
+    4 или 5 пальцев подняты.
+    Это надёжнее, чем требовать идеальный большой палец.
+    """
+    fingers = count_fingers(hand_landmarks)
+    return fingers >= 4
+
+
 def draw_neon_line(canvas, x1, y1, x2, y2):
     # Внешнее свечение
     cv2.line(canvas, (x1, y1), (x2, y2), (255, 200, 0), 10)
@@ -120,11 +134,19 @@ def update_particles(frame):
         p["y"] += p["dy"]
         p["life"] -= 1
 
-        # маленькие искры
         cv2.circle(frame, (int(p["x"]), int(p["y"])), 2, (255, 255, 180), -1)
 
         if p["life"] <= 0:
             particles.remove(p)
+
+
+def clear_canvas():
+    global canvas, particles, prev_x, prev_y, smooth_x, smooth_y
+    if canvas is not None:
+        canvas[:] = 0
+    particles.clear()
+    prev_x, prev_y = None, None
+    smooth_x, smooth_y = None, None
 
 
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -146,6 +168,7 @@ while True:
 
     fingers_count = 0
     drawing_mode = False
+    open_palm_detected = False
 
     if result.multi_hand_landmarks:
         for hand_landmarks in result.multi_hand_landmarks:
@@ -154,6 +177,11 @@ while True:
             landmarks = hand_landmarks.landmark
             fingers_count = count_fingers(hand_landmarks)
 
+            # Проверяем жест открытой ладони
+            if is_open_palm(hand_landmarks):
+                open_palm_detected = True
+
+            # Режим рисования
             if only_index_finger_up(landmarks):
                 drawing_mode = True
 
@@ -183,16 +211,26 @@ while True:
         prev_x, prev_y = None, None
         smooth_x, smooth_y = None, None
 
+    # Логика очистки жестом
+    if open_palm_detected and not drawing_mode:
+        clear_gesture_frames += 1
+    else:
+        clear_gesture_frames = 0
+
+    if clear_gesture_frames >= CLEAR_HOLD_FRAMES:
+        clear_canvas()
+        clear_gesture_frames = 0
+
     # Мягкое свечение
     glow = cv2.GaussianBlur(canvas, (0, 0), 6)
 
     # Сначала glow
     frame = cv2.addWeighted(frame, 1.0, glow, 0.3, 0)
 
-    # Потом сам холст мягко, чтобы не было белых точек-пересветов
+    # Потом сам холст мягко
     frame = cv2.addWeighted(frame, 1.0, canvas, 0.7, 0)
 
-    # Потом искры поверх
+    # Искры поверх
     update_particles(frame)
 
     cv2.putText(
@@ -216,6 +254,19 @@ while True:
             2
         )
 
+    # Подсказка про очистку жестом
+    if open_palm_detected and not drawing_mode:
+        progress = int((clear_gesture_frames / CLEAR_HOLD_FRAMES) * 100)
+        cv2.putText(
+            frame,
+            f"CLEARING... {progress}%",
+            (20, 150),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0, 100, 255),
+            2
+        )
+
     _, _, window_w, window_h = cv2.getWindowImageRect(WINDOW_NAME)
 
     if window_w > 0 and window_h > 0:
@@ -231,8 +282,8 @@ while True:
         break
 
     if key == ord('c'):
-        canvas[:] = 0
-        particles.clear()
+        clear_canvas()
+        clear_gesture_frames = 0
 
 cap.release()
 cv2.destroyAllWindows()
