@@ -48,6 +48,9 @@ win_line_progress = 0.0
 WIN_LINE_SPEED = 0.04
 frame_counter = 0
 
+# Очередь хода
+current_turn = "X"
+
 
 def is_finger_up(landmarks, tip_id, pip_id):
     return landmarks[tip_id].y < landmarks[pip_id].y
@@ -58,8 +61,8 @@ def calc_angle(a, b, c):
     cb = (c[0] - b[0], c[1] - b[1])
 
     dot = ab[0] * cb[0] + ab[1] * cb[1]
-    ab_len = math.hypot(ab[0] - 0, ab[1] - 0)
-    cb_len = math.hypot(cb[0] - 0, cb[1] - 0)
+    ab_len = math.hypot(ab[0], ab[1])
+    cb_len = math.hypot(cb[0], cb[1])
 
     if ab_len == 0 or cb_len == 0:
         return 0
@@ -181,13 +184,14 @@ def clear_canvas():
 
 
 def reset_board():
-    global board, game_over, winner_text, winning_cells, win_line_progress, win_particles
+    global board, game_over, winner_text, winning_cells, win_line_progress, win_particles, current_turn
     board = [["" for _ in range(3)] for _ in range(3)]
     game_over = False
     winner_text = ""
     winning_cells = []
     win_line_progress = 0.0
     win_particles.clear()
+    current_turn = "X"
 
 
 def clear_selected_cell(frame_w, frame_h):
@@ -454,10 +458,15 @@ def update_game_state():
 
 
 def place_symbol(points, symbol, frame_w, frame_h):
-    global status_message, status_timer
+    global status_message, status_timer, current_turn
 
     if game_over:
         status_message = "Game over. Press C for new game"
+        status_timer = 90
+        return
+
+    if symbol != current_turn:
+        status_message = f"Now turn: {current_turn}"
         status_timer = 90
         return
 
@@ -508,6 +517,9 @@ def place_symbol(points, symbol, frame_w, frame_h):
 
     update_game_state()
 
+    if not game_over:
+        current_turn = "O" if current_turn == "X" else "X"
+
 
 def get_cell_center(row, col, frame_w, frame_h):
     cell_w = frame_w // 3
@@ -533,14 +545,12 @@ def draw_board(frame):
     cv2.line(frame, (0, cell_h), (w, cell_h), line_color, thickness)
     cv2.line(frame, (0, cell_h * 2), (w, cell_h * 2), line_color, thickness)
 
-    # Подсветка выбранной ячейки
     x1 = selected_col * cell_w
     y1 = selected_row * cell_h
     x2 = x1 + cell_w
     y2 = y1 + cell_h
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
-    # Пульсация выигрышных клеток
     pulse_thickness = 2 + int((math.sin(frame_counter * 0.25) + 1) * 2)
 
     for row in range(3):
@@ -557,7 +567,6 @@ def draw_board(frame):
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
 
-            # Подсветка выигрышных ячеек
             if (row, col) in winning_cells:
                 cv2.rectangle(frame, (x1 + 4, y1 + 4), (x2 - 4, y2 - 4), (0, 0, 255), pulse_thickness)
 
@@ -575,7 +584,6 @@ def draw_board(frame):
                 thick = 5 if (row, col) in winning_cells else 4
                 cv2.circle(frame, (cx, cy), radius, color, thick)
 
-    # Анимированная победная линия
     winner, cells = check_winner()
     if winner and len(cells) == 3:
         start_row, start_col = cells[0]
@@ -591,11 +599,9 @@ def draw_board(frame):
         current_x = int(start_x + (end_x - start_x) * win_line_progress)
         current_y = int(start_y + (end_y - start_y) * win_line_progress)
 
-        # Неоновая линия победы
         cv2.line(frame, (start_x, start_y), (current_x, current_y), (0, 0, 255), 8)
         cv2.line(frame, (start_x, start_y), (current_x, current_y), (0, 255, 255), 3)
 
-        # Искры на кончике линии
         if frame_counter % 2 == 0:
             add_win_particles(current_x, current_y)
 
@@ -713,11 +719,21 @@ while True:
         2
     )
 
+    cv2.putText(
+        frame,
+        f"Current turn: {current_turn}",
+        (20, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255, 255, 255),
+        2
+    )
+
     if drawing_mode and not game_over:
         cv2.putText(
             frame,
             "DRAWING",
-            (20, 80),
+            (20, 120),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0, 255, 255),
@@ -729,7 +745,7 @@ while True:
         cv2.putText(
             frame,
             f"CELL CLEAR... {progress}%",
-            (20, 120),
+            (20, 160),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0, 100, 255),
@@ -741,7 +757,7 @@ while True:
         cv2.putText(
             frame,
             f"Detected: {detected_shape}",
-            (20, 160),
+            (20, 200),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.0,
             color,
@@ -753,7 +769,7 @@ while True:
         cv2.putText(
             frame,
             status_message,
-            (20, 200),
+            (20, 240),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.9,
             (255, 255, 255),
@@ -765,7 +781,7 @@ while True:
         cv2.putText(
             frame,
             winner_text,
-            (20, 255),
+            (20, 285),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.3,
             (0, 0, 255),
