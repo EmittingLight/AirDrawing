@@ -22,7 +22,7 @@ SMOOTHING = 0.2
 
 particles = []
 
-WINDOW_NAME = "Hand Drawing"
+WINDOW_NAME = "Air TicTacToe"
 
 clear_gesture_frames = 0
 CLEAR_HOLD_FRAMES = 15
@@ -30,6 +30,11 @@ CLEAR_HOLD_FRAMES = 15
 stroke_points = []
 detected_shape = ""
 detected_shape_timer = 0
+status_message = ""
+status_timer = 0
+
+# Игровое поле 3x3
+board = [["" for _ in range(3)] for _ in range(3)]
 
 
 def is_finger_up(landmarks, tip_id, pip_id):
@@ -139,6 +144,11 @@ def clear_canvas():
     stroke_points = []
 
 
+def reset_board():
+    global board
+    board = [["" for _ in range(3)] for _ in range(3)]
+
+
 def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
@@ -196,7 +206,6 @@ def detect_shape(points):
     center_x = (min_x + max_x) / 2
     center_y = (min_y + max_y) / 2
 
-    # Насколько часто линия проходит через центр
     center_hits = 0
     center_rx = width * 0.18
     center_ry = height * 0.18
@@ -205,14 +214,12 @@ def detect_shape(points):
             center_hits += 1
     center_ratio = center_hits / len(pts)
 
-    # Квадранты вокруг центра
     quadrants = set()
     for x, y in pts:
         qx = 0 if x < center_x else 1
         qy = 0 if y < center_y else 1
         quadrants.add((qx, qy))
 
-    # Радиусы до центра — для круга должны быть более-менее стабильны
     radii = [math.hypot(x - center_x, y - center_y) for x, y in pts]
     mean_radius = sum(radii) / len(radii)
     if mean_radius == 0:
@@ -220,9 +227,8 @@ def detect_shape(points):
     radius_std = (sum((r - mean_radius) ** 2 for r in radii) / len(radii)) ** 0.5
     radius_std_ratio = radius_std / mean_radius
 
-    # Направления сегментов — для X должны преобладать диагонали
-    diag1_hits = 0  # около 45°
-    diag2_hits = 0  # около 135°
+    diag1_hits = 0
+    diag2_hits = 0
     useful_segments = 0
 
     for i in range(1, len(pts)):
@@ -253,8 +259,6 @@ def detect_shape(points):
     perimeter_like = 2 * (width + height)
     len_box_ratio = total_len / perimeter_like if perimeter_like != 0 else 999
 
-    # ---- O ----
-    # Круг: замкнут, не слишком лезет в центр, радиус более-менее стабилен
     if (
         0.7 <= bbox_ratio <= 1.35
         and close_ratio < 0.22
@@ -264,8 +268,6 @@ def detect_shape(points):
     ):
         return "O"
 
-    # ---- X ----
-    # Крестик: не замкнут, часто идёт через центр, есть обе диагонали и покрывает 4 квадранта
     if (
         0.55 <= bbox_ratio <= 1.8
         and close_ratio > 0.18
@@ -279,8 +281,148 @@ def detect_shape(points):
     return "?"
 
 
+def get_stroke_cell(points, frame_w, frame_h):
+    bounds = get_stroke_bounds(points)
+    if bounds is None:
+        return None
+
+    min_x, min_y, max_x, max_y = bounds
+
+    cell_w = frame_w // 3
+    cell_h = frame_h // 3
+
+    best_row, best_col = None, None
+    best_overlap = 0
+
+    for row in range(3):
+        for col in range(3):
+            cell_x1 = col * cell_w
+            cell_y1 = row * cell_h
+            cell_x2 = cell_x1 + cell_w
+            cell_y2 = cell_y1 + cell_h
+
+            overlap_x1 = max(min_x, cell_x1)
+            overlap_y1 = max(min_y, cell_y1)
+            overlap_x2 = min(max_x, cell_x2)
+            overlap_y2 = min(max_y, cell_y2)
+
+            overlap_w = max(0, overlap_x2 - overlap_x1)
+            overlap_h = max(0, overlap_y2 - overlap_y1)
+            overlap_area = overlap_w * overlap_h
+
+            if overlap_area > best_overlap:
+                best_overlap = overlap_area
+                best_row, best_col = row, col
+
+    if best_row is None:
+        return None
+
+    return best_row, best_col
+
+
+def get_stroke_bounds(points):
+    if not points:
+        return None
+
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def place_symbol(points, symbol, frame_w, frame_h):
+    global status_message, status_timer
+
+    cell = get_stroke_cell(points, frame_w, frame_h)
+    bounds = get_stroke_bounds(points)
+
+    if cell is None or bounds is None:
+        status_message = "No cell detected"
+        status_timer = 90
+        return
+
+    row, col = cell
+    min_x, min_y, max_x, max_y = bounds
+
+    cell_w = frame_w // 3
+    cell_h = frame_h // 3
+
+    cell_x1 = col * cell_w
+    cell_y1 = row * cell_h
+    cell_x2 = cell_x1 + cell_w
+    cell_y2 = cell_y1 + cell_h
+
+    overlap_x1 = max(min_x, cell_x1)
+    overlap_y1 = max(min_y, cell_y1)
+    overlap_x2 = min(max_x, cell_x2)
+    overlap_y2 = min(max_y, cell_y2)
+
+    overlap_w = max(0, overlap_x2 - overlap_x1)
+    overlap_h = max(0, overlap_y2 - overlap_y1)
+    overlap_area = overlap_w * overlap_h
+
+    shape_area = max(1, (max_x - min_x) * (max_y - min_y))
+    overlap_ratio = overlap_area / shape_area
+
+    # Было слишком строго. Делаем мягче.
+    if overlap_ratio < 0.25:
+        status_message = "Draw more inside one cell"
+        status_timer = 90
+        return
+
+    if board[row][col] != "":
+        status_message = "Cell already occupied"
+        status_timer = 90
+        return
+
+    board[row][col] = symbol
+    status_message = f"Placed {symbol} at row {row + 1}, col {col + 1}"
+    status_timer = 90
+
+
+def draw_board(frame):
+    h, w, _ = frame.shape
+    cell_w = w // 3
+    cell_h = h // 3
+
+    line_color = (0, 255, 255)
+    thickness = 2
+
+    cv2.line(frame, (cell_w, 0), (cell_w, h), line_color, thickness)
+    cv2.line(frame, (cell_w * 2, 0), (cell_w * 2, h), line_color, thickness)
+
+    cv2.line(frame, (0, cell_h), (w, cell_h), line_color, thickness)
+    cv2.line(frame, (0, cell_h * 2), (w, cell_h * 2), line_color, thickness)
+
+    for row in range(3):
+        for col in range(3):
+            symbol = board[row][col]
+            if symbol == "":
+                continue
+
+            x1 = col * cell_w
+            y1 = row * cell_h
+            x2 = x1 + cell_w
+            y2 = y1 + cell_h
+
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+
+            if symbol == "X":
+                offset_x = cell_w // 4
+                offset_y = cell_h // 4
+                color = (0, 255, 0)
+                cv2.line(frame, (cx - offset_x, cy - offset_y), (cx + offset_x, cy + offset_y), color, 4)
+                cv2.line(frame, (cx + offset_x, cy - offset_y), (cx - offset_x, cy + offset_y), color, 4)
+
+            elif symbol == "O":
+                radius = min(cell_w, cell_h) // 4
+                color = (255, 255, 0)
+                cv2.circle(frame, (cx, cy), radius, color, 4)
+
+
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
-cv2.resizeWindow(WINDOW_NAME, 960, 720)
+cv2.resizeWindow(WINDOW_NAME, 1100, 800)
 
 was_drawing_last_frame = False
 
@@ -294,6 +436,8 @@ while True:
 
     if canvas is None:
         canvas = np.zeros_like(frame)
+
+    frame_h, frame_w, _ = frame.shape
 
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands.process(rgb_frame)
@@ -315,9 +459,8 @@ while True:
             if only_index_finger_up(landmarks):
                 drawing_mode = True
 
-                h, w, _ = frame.shape
-                x = int(landmarks[8].x * w)
-                y = int(landmarks[8].y * h)
+                x = int(landmarks[8].x * frame_w)
+                y = int(landmarks[8].y * frame_h)
 
                 if smooth_x is None or smooth_y is None:
                     smooth_x, smooth_y = x, y
@@ -342,16 +485,18 @@ while True:
         prev_x, prev_y = None, None
         smooth_x, smooth_y = None, None
 
-    # Если перестали рисовать — распознаём фигуру
     if was_drawing_last_frame and not drawing_mode:
         if len(stroke_points) >= 25:
             detected_shape = detect_shape(stroke_points)
             detected_shape_timer = 90
+
+            if detected_shape in ["X", "O"]:
+                place_symbol(stroke_points, detected_shape, frame_w, frame_h)
+
         stroke_points = []
 
     was_drawing_last_frame = drawing_mode
 
-    # Очистка жестом
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
@@ -359,20 +504,24 @@ while True:
 
     if clear_gesture_frames >= CLEAR_HOLD_FRAMES:
         clear_canvas()
+        reset_board()
         clear_gesture_frames = 0
         detected_shape = ""
         detected_shape_timer = 0
+        status_message = "Board cleared"
+        status_timer = 90
 
     glow = cv2.GaussianBlur(canvas, (0, 0), 6)
     frame = cv2.addWeighted(frame, 1.0, glow, 0.3, 0)
     frame = cv2.addWeighted(frame, 1.0, canvas, 0.7, 0)
 
     update_particles(frame)
+    draw_board(frame)
 
     cv2.putText(
         frame,
         f"Fingers: {fingers_count}",
-        (20, 50),
+        (20, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
         1,
         (0, 255, 0),
@@ -383,7 +532,7 @@ while True:
         cv2.putText(
             frame,
             "DRAWING",
-            (20, 100),
+            (20, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0, 255, 255),
@@ -395,7 +544,7 @@ while True:
         cv2.putText(
             frame,
             f"CLEARING... {progress}%",
-            (20, 150),
+            (20, 120),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0, 100, 255),
@@ -407,13 +556,25 @@ while True:
         cv2.putText(
             frame,
             f"Detected: {detected_shape}",
-            (20, 200),
+            (20, 160),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
+            1.0,
             color,
-            3
+            2
         )
         detected_shape_timer -= 1
+
+    if status_timer > 0 and status_message:
+        cv2.putText(
+            frame,
+            status_message,
+            (20, 200),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2
+        )
+        status_timer -= 1
 
     _, _, window_w, window_h = cv2.getWindowImageRect(WINDOW_NAME)
 
@@ -431,9 +592,12 @@ while True:
 
     if key == ord('c'):
         clear_canvas()
+        reset_board()
         clear_gesture_frames = 0
         detected_shape = ""
         detected_shape_timer = 0
+        status_message = "Board cleared"
+        status_timer = 90
 
 cap.release()
 cv2.destroyAllWindows()
