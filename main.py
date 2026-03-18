@@ -35,6 +35,10 @@ status_timer = 0
 
 board = [["" for _ in range(3)] for _ in range(3)]
 
+# выбранная ячейка
+selected_row = 1
+selected_col = 1
+
 
 def is_finger_up(landmarks, tip_id, pip_id):
     return landmarks[tip_id].y < landmarks[pip_id].y
@@ -146,6 +150,41 @@ def clear_canvas():
 def reset_board():
     global board
     board = [["" for _ in range(3)] for _ in range(3)]
+
+
+def clear_selected_cell(frame_w, frame_h):
+    global status_message, status_timer, canvas, particles
+
+    cell_w = frame_w // 3
+    cell_h = frame_h // 3
+
+    x1 = selected_col * cell_w
+    y1 = selected_row * cell_h
+    x2 = x1 + cell_w
+    y2 = y1 + cell_h
+
+    # Был ли там символ до очистки
+    was_empty = (board[selected_row][selected_col] == "")
+
+    # Удаляем знак из логического поля
+    board[selected_row][selected_col] = ""
+
+    # Удаляем рисунок и следы в этой клетке
+    if canvas is not None:
+        canvas[y1:y2, x1:x2] = 0
+
+    # Удаляем искры, попавшие в эту клетку
+    particles[:] = [
+        p for p in particles
+        if not (x1 <= int(p["x"]) < x2 and y1 <= int(p["y"]) < y2)
+    ]
+
+    if was_empty:
+        status_message = f"Cell {selected_row + 1},{selected_col + 1} already empty"
+    else:
+        status_message = f"Cleared cell {selected_row + 1},{selected_col + 1}"
+
+    status_timer = 90
 
 
 def distance(p1, p2):
@@ -381,6 +420,8 @@ def place_symbol(points, symbol, frame_w, frame_h):
 
 
 def draw_board(frame):
+    global selected_row, selected_col
+
     h, w, _ = frame.shape
     cell_w = w // 3
     cell_h = h // 3
@@ -393,6 +434,13 @@ def draw_board(frame):
 
     cv2.line(frame, (0, cell_h), (w, cell_h), line_color, thickness)
     cv2.line(frame, (0, cell_h * 2), (w, cell_h * 2), line_color, thickness)
+
+    # Подсветка текущей выбранной ячейки
+    x1 = selected_col * cell_w
+    y1 = selected_row * cell_h
+    x2 = x1 + cell_w
+    y2 = y1 + cell_h
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
     for row in range(3):
         for col in range(3):
@@ -438,6 +486,8 @@ while True:
         canvas = np.zeros_like(frame)
 
     frame_h, frame_w, _ = frame.shape
+    cell_w = frame_w // 3
+    cell_h = frame_h // 3
 
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands.process(rgb_frame)
@@ -456,11 +506,15 @@ while True:
             if is_open_palm(hand_landmarks):
                 open_palm_detected = True
 
+            # указательный палец выбирает ячейку
             if only_index_finger_up(landmarks):
                 drawing_mode = True
 
                 x = int(landmarks[8].x * frame_w)
                 y = int(landmarks[8].y * frame_h)
+
+                selected_col = min(2, max(0, x // cell_w))
+                selected_row = min(2, max(0, y // cell_h))
 
                 if smooth_x is None or smooth_y is None:
                     smooth_x, smooth_y = x, y
@@ -497,19 +551,17 @@ while True:
 
     was_drawing_last_frame = drawing_mode
 
+    # ладонь очищает только выбранную ячейку
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
         clear_gesture_frames = 0
 
     if clear_gesture_frames >= CLEAR_HOLD_FRAMES:
-        clear_canvas()
-        reset_board()
+        clear_selected_cell(frame_w, frame_h)
         clear_gesture_frames = 0
         detected_shape = ""
         detected_shape_timer = 0
-        status_message = "Board cleared"
-        status_timer = 90
 
     glow = cv2.GaussianBlur(canvas, (0, 0), 6)
     frame = cv2.addWeighted(frame, 1.0, glow, 0.3, 0)
@@ -543,7 +595,7 @@ while True:
         progress = int((clear_gesture_frames / CLEAR_HOLD_FRAMES) * 100)
         cv2.putText(
             frame,
-            f"CLEARING... {progress}%",
+            f"CELL CLEAR... {progress}%",
             (20, 120),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
@@ -590,6 +642,7 @@ while True:
     if key == ord('q'):
         break
 
+    # C очищает всё поле и холст
     if key == ord('c'):
         clear_canvas()
         reset_board()
