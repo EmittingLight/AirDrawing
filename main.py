@@ -39,6 +39,10 @@ board = [["" for _ in range(3)] for _ in range(3)]
 selected_row = 1
 selected_col = 1
 
+# состояние игры
+game_over = False
+winner_text = ""
+
 
 def is_finger_up(landmarks, tip_id, pip_id):
     return landmarks[tip_id].y < landmarks[pip_id].y
@@ -148,12 +152,19 @@ def clear_canvas():
 
 
 def reset_board():
-    global board
+    global board, game_over, winner_text
     board = [["" for _ in range(3)] for _ in range(3)]
+    game_over = False
+    winner_text = ""
 
 
 def clear_selected_cell(frame_w, frame_h):
     global status_message, status_timer, canvas, particles
+
+    if game_over:
+        status_message = "Game over. Press C for new game"
+        status_timer = 90
+        return
 
     cell_w = frame_w // 3
     cell_h = frame_h // 3
@@ -163,17 +174,12 @@ def clear_selected_cell(frame_w, frame_h):
     x2 = x1 + cell_w
     y2 = y1 + cell_h
 
-    # Был ли там символ до очистки
     was_empty = (board[selected_row][selected_col] == "")
-
-    # Удаляем знак из логического поля
     board[selected_row][selected_col] = ""
 
-    # Удаляем рисунок и следы в этой клетке
     if canvas is not None:
         canvas[y1:y2, x1:x2] = 0
 
-    # Удаляем искры, попавшие в эту клетку
     particles[:] = [
         p for p in particles
         if not (x1 <= int(p["x"]) < x2 and y1 <= int(p["y"]) < y2)
@@ -297,7 +303,6 @@ def detect_shape(points):
     perimeter_like = 2 * (width + height)
     len_box_ratio = total_len / perimeter_like if perimeter_like != 0 else 999
 
-    # МЯГЧЕ ДЛЯ O
     if (
         0.55 <= bbox_ratio <= 1.6
         and close_ratio < 0.38
@@ -307,7 +312,6 @@ def detect_shape(points):
     ):
         return "O"
 
-    # ЧУТЬ СТРОЖЕ ДЛЯ X
     if (
         0.45 <= bbox_ratio <= 1.9
         and close_ratio > 0.22
@@ -370,8 +374,61 @@ def get_stroke_cell(points, frame_w, frame_h):
     return best_row, best_col
 
 
+def check_winner():
+    # строки
+    for row in range(3):
+        if board[row][0] != "" and board[row][0] == board[row][1] == board[row][2]:
+            return board[row][0], [(row, 0), (row, 1), (row, 2)]
+
+    # столбцы
+    for col in range(3):
+        if board[0][col] != "" and board[0][col] == board[1][col] == board[2][col]:
+            return board[0][col], [(0, col), (1, col), (2, col)]
+
+    # диагональ 1
+    if board[0][0] != "" and board[0][0] == board[1][1] == board[2][2]:
+        return board[0][0], [(0, 0), (1, 1), (2, 2)]
+
+    # диагональ 2
+    if board[0][2] != "" and board[0][2] == board[1][1] == board[2][0]:
+        return board[0][2], [(0, 2), (1, 1), (2, 0)]
+
+    return None, []
+
+
+def is_draw():
+    for row in range(3):
+        for col in range(3):
+            if board[row][col] == "":
+                return False
+    return True
+
+
+def update_game_state():
+    global game_over, winner_text, status_message, status_timer
+
+    winner, _ = check_winner()
+    if winner:
+        game_over = True
+        winner_text = f"{winner} WINS!"
+        status_message = "Press C for new game"
+        status_timer = 120
+        return
+
+    if is_draw():
+        game_over = True
+        winner_text = "DRAW!"
+        status_message = "Press C for new game"
+        status_timer = 120
+
+
 def place_symbol(points, symbol, frame_w, frame_h):
     global status_message, status_timer
+
+    if game_over:
+        status_message = "Game over. Press C for new game"
+        status_timer = 90
+        return
 
     cell = get_stroke_cell(points, frame_w, frame_h)
     bounds = get_stroke_bounds(points)
@@ -418,6 +475,8 @@ def place_symbol(points, symbol, frame_w, frame_h):
     status_message = f"Placed {symbol} at row {row + 1}, col {col + 1}"
     status_timer = 90
 
+    update_game_state()
+
 
 def draw_board(frame):
     global selected_row, selected_col
@@ -435,13 +494,14 @@ def draw_board(frame):
     cv2.line(frame, (0, cell_h), (w, cell_h), line_color, thickness)
     cv2.line(frame, (0, cell_h * 2), (w, cell_h * 2), line_color, thickness)
 
-    # Подсветка текущей выбранной ячейки
+    # Подсветка выбранной ячейки
     x1 = selected_col * cell_w
     y1 = selected_row * cell_h
     x2 = x1 + cell_w
     y2 = y1 + cell_h
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
+    # Рисуем символы
     for row in range(3):
         for col in range(3):
             symbol = board[row][col]
@@ -467,6 +527,19 @@ def draw_board(frame):
                 radius = min(cell_w, cell_h) // 4
                 color = (255, 255, 0)
                 cv2.circle(frame, (cx, cy), radius, color, 4)
+
+    # Линия победы
+    winner, cells = check_winner()
+    if winner and len(cells) == 3:
+        start_row, start_col = cells[0]
+        end_row, end_col = cells[2]
+
+        start_x = start_col * cell_w + cell_w // 2
+        start_y = start_row * cell_h + cell_h // 2
+        end_x = end_col * cell_w + cell_w // 2
+        end_y = end_row * cell_h + cell_h // 2
+
+        cv2.line(frame, (start_x, start_y), (end_x, end_y), (0, 0, 255), 6)
 
 
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -506,7 +579,6 @@ while True:
             if is_open_palm(hand_landmarks):
                 open_palm_detected = True
 
-            # указательный палец выбирает ячейку
             if only_index_finger_up(landmarks):
                 drawing_mode = True
 
@@ -551,7 +623,7 @@ while True:
 
     was_drawing_last_frame = drawing_mode
 
-    # ладонь очищает только выбранную ячейку
+    # Ладонь очищает только выбранную ячейку
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
@@ -591,7 +663,7 @@ while True:
             2
         )
 
-    if open_palm_detected and not drawing_mode:
+    if open_palm_detected and not drawing_mode and not game_over:
         progress = int((clear_gesture_frames / CLEAR_HOLD_FRAMES) * 100)
         cv2.putText(
             frame,
@@ -628,6 +700,17 @@ while True:
         )
         status_timer -= 1
 
+    if game_over and winner_text:
+        cv2.putText(
+            frame,
+            winner_text,
+            (20, 250),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.2,
+            (0, 0, 255),
+            3
+        )
+
     _, _, window_w, window_h = cv2.getWindowImageRect(WINDOW_NAME)
 
     if window_w > 0 and window_h > 0:
@@ -642,14 +725,13 @@ while True:
     if key == ord('q'):
         break
 
-    # C очищает всё поле и холст
     if key == ord('c'):
         clear_canvas()
         reset_board()
         clear_gesture_frames = 0
         detected_shape = ""
         detected_shape_timer = 0
-        status_message = "Board cleared"
+        status_message = "New game started"
         status_timer = 90
 
 cap.release()
