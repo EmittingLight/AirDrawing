@@ -21,6 +21,7 @@ smooth_x, smooth_y = None, None
 SMOOTHING = 0.2
 
 particles = []
+win_particles = []
 
 WINDOW_NAME = "Air TicTacToe"
 
@@ -35,13 +36,17 @@ status_timer = 0
 
 board = [["" for _ in range(3)] for _ in range(3)]
 
-# выбранная ячейка
 selected_row = 1
 selected_col = 1
 
-# состояние игры
 game_over = False
 winner_text = ""
+winning_cells = []
+
+# Анимация победной линии
+win_line_progress = 0.0
+WIN_LINE_SPEED = 0.04
+frame_counter = 0
 
 
 def is_finger_up(landmarks, tip_id, pip_id):
@@ -53,8 +58,8 @@ def calc_angle(a, b, c):
     cb = (c[0] - b[0], c[1] - b[1])
 
     dot = ab[0] * cb[0] + ab[1] * cb[1]
-    ab_len = math.hypot(ab[0], ab[1])
-    cb_len = math.hypot(cb[0], cb[1])
+    ab_len = math.hypot(ab[0] - 0, ab[1] - 0)
+    cb_len = math.hypot(cb[0] - 0, cb[1] - 0)
 
     if ab_len == 0 or cb_len == 0:
         return 0
@@ -104,7 +109,6 @@ def only_index_finger_up(landmarks):
     middle_up = is_finger_up(landmarks, 12, 10)
     ring_up = is_finger_up(landmarks, 16, 14)
     pinky_up = is_finger_up(landmarks, 20, 18)
-
     return index_up and not middle_up and not ring_up and not pinky_up
 
 
@@ -141,21 +145,49 @@ def update_particles(frame):
             particles.remove(p)
 
 
+def add_win_particles(x, y):
+    for _ in range(8):
+        win_particles.append({
+            "x": x,
+            "y": y,
+            "dx": random.uniform(-4, 4),
+            "dy": random.uniform(-4, 4),
+            "life": random.randint(10, 20)
+        })
+
+
+def update_win_particles(frame):
+    for p in win_particles[:]:
+        p["x"] += p["dx"]
+        p["y"] += p["dy"]
+        p["life"] -= 1
+
+        size = 3 if p["life"] > 8 else 2
+        cv2.circle(frame, (int(p["x"]), int(p["y"])), size, (0, 255, 255), -1)
+
+        if p["life"] <= 0:
+            win_particles.remove(p)
+
+
 def clear_canvas():
-    global canvas, particles, prev_x, prev_y, smooth_x, smooth_y, stroke_points
+    global canvas, particles, prev_x, prev_y, smooth_x, smooth_y, stroke_points, win_particles
     if canvas is not None:
         canvas[:] = 0
     particles.clear()
+    win_particles.clear()
     prev_x, prev_y = None, None
     smooth_x, smooth_y = None, None
     stroke_points = []
 
 
 def reset_board():
-    global board, game_over, winner_text
+    global board, game_over, winner_text, winning_cells, win_line_progress, win_particles
     board = [["" for _ in range(3)] for _ in range(3)]
     game_over = False
     winner_text = ""
+    winning_cells = []
+    win_line_progress = 0.0
+    win_particles.clear()
 
 
 def clear_selected_cell(frame_w, frame_h):
@@ -375,21 +407,17 @@ def get_stroke_cell(points, frame_w, frame_h):
 
 
 def check_winner():
-    # строки
     for row in range(3):
         if board[row][0] != "" and board[row][0] == board[row][1] == board[row][2]:
             return board[row][0], [(row, 0), (row, 1), (row, 2)]
 
-    # столбцы
     for col in range(3):
         if board[0][col] != "" and board[0][col] == board[1][col] == board[2][col]:
             return board[0][col], [(0, col), (1, col), (2, col)]
 
-    # диагональ 1
     if board[0][0] != "" and board[0][0] == board[1][1] == board[2][2]:
         return board[0][0], [(0, 0), (1, 1), (2, 2)]
 
-    # диагональ 2
     if board[0][2] != "" and board[0][2] == board[1][1] == board[2][0]:
         return board[0][2], [(0, 2), (1, 1), (2, 0)]
 
@@ -405,12 +433,14 @@ def is_draw():
 
 
 def update_game_state():
-    global game_over, winner_text, status_message, status_timer
+    global game_over, winner_text, status_message, status_timer, winning_cells, win_line_progress
 
-    winner, _ = check_winner()
+    winner, cells = check_winner()
     if winner:
         game_over = True
         winner_text = f"{winner} WINS!"
+        winning_cells = cells
+        win_line_progress = 0.0
         status_message = "Press C for new game"
         status_timer = 120
         return
@@ -418,6 +448,7 @@ def update_game_state():
     if is_draw():
         game_over = True
         winner_text = "DRAW!"
+        winning_cells = []
         status_message = "Press C for new game"
         status_timer = 120
 
@@ -478,8 +509,16 @@ def place_symbol(points, symbol, frame_w, frame_h):
     update_game_state()
 
 
+def get_cell_center(row, col, frame_w, frame_h):
+    cell_w = frame_w // 3
+    cell_h = frame_h // 3
+    cx = col * cell_w + cell_w // 2
+    cy = row * cell_h + cell_h // 2
+    return cx, cy
+
+
 def draw_board(frame):
-    global selected_row, selected_col
+    global selected_row, selected_col, frame_counter, win_line_progress
 
     h, w, _ = frame.shape
     cell_w = w // 3
@@ -501,7 +540,9 @@ def draw_board(frame):
     y2 = y1 + cell_h
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
 
-    # Рисуем символы
+    # Пульсация выигрышных клеток
+    pulse_thickness = 2 + int((math.sin(frame_counter * 0.25) + 1) * 2)
+
     for row in range(3):
         for col in range(3):
             symbol = board[row][col]
@@ -516,30 +557,47 @@ def draw_board(frame):
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
 
+            # Подсветка выигрышных ячеек
+            if (row, col) in winning_cells:
+                cv2.rectangle(frame, (x1 + 4, y1 + 4), (x2 - 4, y2 - 4), (0, 0, 255), pulse_thickness)
+
             if symbol == "X":
                 offset_x = cell_w // 4
                 offset_y = cell_h // 4
                 color = (0, 255, 0)
-                cv2.line(frame, (cx - offset_x, cy - offset_y), (cx + offset_x, cy + offset_y), color, 4)
-                cv2.line(frame, (cx + offset_x, cy - offset_y), (cx - offset_x, cy + offset_y), color, 4)
+                thick = 5 if (row, col) in winning_cells else 4
+                cv2.line(frame, (cx - offset_x, cy - offset_y), (cx + offset_x, cy + offset_y), color, thick)
+                cv2.line(frame, (cx + offset_x, cy - offset_y), (cx - offset_x, cy + offset_y), color, thick)
 
             elif symbol == "O":
                 radius = min(cell_w, cell_h) // 4
                 color = (255, 255, 0)
-                cv2.circle(frame, (cx, cy), radius, color, 4)
+                thick = 5 if (row, col) in winning_cells else 4
+                cv2.circle(frame, (cx, cy), radius, color, thick)
 
-    # Линия победы
+    # Анимированная победная линия
     winner, cells = check_winner()
     if winner and len(cells) == 3:
         start_row, start_col = cells[0]
         end_row, end_col = cells[2]
 
-        start_x = start_col * cell_w + cell_w // 2
-        start_y = start_row * cell_h + cell_h // 2
-        end_x = end_col * cell_w + cell_w // 2
-        end_y = end_row * cell_h + cell_h // 2
+        start_x, start_y = get_cell_center(start_row, start_col, w, h)
+        end_x, end_y = get_cell_center(end_row, end_col, w, h)
 
-        cv2.line(frame, (start_x, start_y), (end_x, end_y), (0, 0, 255), 6)
+        if win_line_progress < 1.0:
+            win_line_progress += WIN_LINE_SPEED
+            win_line_progress = min(1.0, win_line_progress)
+
+        current_x = int(start_x + (end_x - start_x) * win_line_progress)
+        current_y = int(start_y + (end_y - start_y) * win_line_progress)
+
+        # Неоновая линия победы
+        cv2.line(frame, (start_x, start_y), (current_x, current_y), (0, 0, 255), 8)
+        cv2.line(frame, (start_x, start_y), (current_x, current_y), (0, 255, 255), 3)
+
+        # Искры на кончике линии
+        if frame_counter % 2 == 0:
+            add_win_particles(current_x, current_y)
 
 
 cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -548,6 +606,8 @@ cv2.resizeWindow(WINDOW_NAME, 1100, 800)
 was_drawing_last_frame = False
 
 while True:
+    frame_counter += 1
+
     ret, frame = cap.read()
     if not ret:
         print("Ошибка камеры")
@@ -599,11 +659,12 @@ while True:
                 if prev_x is None or prev_y is None:
                     prev_x, prev_y = smooth_x, smooth_y
 
-                draw_neon_line(canvas, prev_x, prev_y, smooth_x, smooth_y)
-                add_sparks(smooth_x, smooth_y)
+                if not game_over:
+                    draw_neon_line(canvas, prev_x, prev_y, smooth_x, smooth_y)
+                    add_sparks(smooth_x, smooth_y)
+                    stroke_points.append((smooth_x, smooth_y))
 
                 prev_x, prev_y = smooth_x, smooth_y
-                stroke_points.append((smooth_x, smooth_y))
             else:
                 prev_x, prev_y = None, None
                 smooth_x, smooth_y = None, None
@@ -623,7 +684,6 @@ while True:
 
     was_drawing_last_frame = drawing_mode
 
-    # Ладонь очищает только выбранную ячейку
     if open_palm_detected and not drawing_mode:
         clear_gesture_frames += 1
     else:
@@ -640,6 +700,7 @@ while True:
     frame = cv2.addWeighted(frame, 1.0, canvas, 0.7, 0)
 
     update_particles(frame)
+    update_win_particles(frame)
     draw_board(frame)
 
     cv2.putText(
@@ -652,7 +713,7 @@ while True:
         2
     )
 
-    if drawing_mode:
+    if drawing_mode and not game_over:
         cv2.putText(
             frame,
             "DRAWING",
@@ -704,9 +765,9 @@ while True:
         cv2.putText(
             frame,
             winner_text,
-            (20, 250),
+            (20, 255),
             cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
+            1.3,
             (0, 0, 255),
             3
         )
